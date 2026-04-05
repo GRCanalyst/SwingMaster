@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
 
+    # CORS — add your Vercel URL here once deployed (comma-separated)
+    allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # Scheduler
     scan_interval_minutes: int = 10
 
