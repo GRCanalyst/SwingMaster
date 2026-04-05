@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(venv/Scripts/pip uninstall:*)",
+      "Bash(venv/Scripts/python -c \"from agent import analyze_ticker; print\\('Import OK'\\)\")",
+      "Bash(git config:*)"
+    ]
+  }
+}
