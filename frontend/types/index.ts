@@ -24,7 +24,13 @@ export interface Alert {
   prices?: AlertPrices;
   db_id?: number;
   triggered_by?: string;
-  // DB history fields
+  // Flat DB history fields (returned directly from SQLite rows)
+  entry_low?: number;
+  entry_high?: number;
+  stop_loss?: number;
+  take_profit_1?: number;
+  take_profit_2?: number;
+  current_price?: number;
   rsi?: number;
   trend?: string;
 }
