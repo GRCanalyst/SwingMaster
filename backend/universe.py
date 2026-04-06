@@ -9,16 +9,35 @@ If the fetch fails for any reason, a hardcoded fallback of ~250 liquid stocks
 keeps the app running without interruption.
 """
 
+import io
 import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
+import requests
 
 log = logging.getLogger("universe")
 
 CACHE_HOURS = 24   # re-fetch daily
 
 _cache: dict = {"tickers": [], "fetched_at": None, "sp500_count": 0, "sp400_count": 0}
+
+# Wikipedia blocks urllib without a browser-like User-Agent
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _read_html_wiki(url: str) -> list[pd.DataFrame]:
+    """Fetch a Wikipedia page via requests (with browser UA) and parse all tables."""
+    resp = requests.get(url, headers=_HEADERS, timeout=15)
+    resp.raise_for_status()
+    return pd.read_html(io.StringIO(resp.text))
 
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
@@ -30,7 +49,8 @@ def _clean(tickers: list[str]) -> list[str]:
 
 def _fetch_sp500() -> list[str]:
     try:
-        df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+        tables = _read_html_wiki("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        df = tables[0]
         tickers = _clean(df["Symbol"].dropna().tolist())
         log.info(f"S&P 500 fetched: {len(tickers)} tickers")
         return tickers
@@ -41,7 +61,8 @@ def _fetch_sp500() -> list[str]:
 
 def _fetch_sp400() -> list[str]:
     try:
-        df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies")[0]
+        tables = _read_html_wiki("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies")
+        df = tables[0]
         # Column name varies — try common names
         col = next((c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()), df.columns[0])
         tickers = _clean(df[col].dropna().tolist())
