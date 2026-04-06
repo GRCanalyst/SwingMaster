@@ -5,7 +5,10 @@ calculates confidence scores, and logs every alert to SQLite.
 """
 
 import json
+import logging
 import os
+import time
+
 from google import genai
 from google.genai.types import (
     GenerateContentConfig, Tool, FunctionDeclaration, Schema, Type, Part
@@ -16,6 +19,35 @@ from tools.indicators import calculate_indicators
 from confidence import calculate_confidence, parse_alert_prices
 from database import save_alert
 from config import settings
+
+_log = logging.getLogger("agent")
+
+# Gemini free tier: 15 requests/min → enforce ≥4 s between each API call
+_MIN_CALL_GAP = 4.0   # seconds
+_last_call_ts: float = 0.0
+
+
+def _gemini_send(chat, message, max_retries: int = 4):
+    """Send a message to Gemini with rate-limiting and 429 retry-backoff."""
+    global _last_call_ts
+    for attempt in range(max_retries):
+        # enforce minimum gap between calls
+        gap = time.monotonic() - _last_call_ts
+        if gap < _MIN_CALL_GAP:
+            time.sleep(_MIN_CALL_GAP - gap)
+
+        try:
+            _last_call_ts = time.monotonic()
+            return chat.send_message(message)
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                wait = _MIN_CALL_GAP * (2 ** attempt)   # 4s, 8s, 16s, 32s
+                _log.warning(f"Gemini 429 — waiting {wait:.0f}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait)
+            else:
+                raise   # non-429 errors bubble up immediately
+    raise RuntimeError("Gemini quota exhausted after retries — try again later.")
 
 # ─── Load system prompt ───────────────────────────────────────────────────────
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
@@ -98,7 +130,7 @@ def analyze_ticker(ticker: str, triggered_by: str = "scheduler") -> dict:
 
     # ── Gemini agentic loop ───────────────────────────────────────────────────
     chat = client.chats.create(model="gemini-2.0-flash", config=_CONFIG)
-    response = chat.send_message(f"Analyze {ticker} for a swing trade setup right now.")
+    response = _gemini_send(chat, f"Analyze {ticker} for a swing trade setup right now.")
 
     for _ in range(5):
         parts = response.candidates[0].content.parts
@@ -112,7 +144,7 @@ def analyze_ticker(ticker: str, triggered_by: str = "scheduler") -> dict:
             )
             for p in fn_calls
         ]
-        response = chat.send_message(fn_responses)
+        response = _gemini_send(chat, fn_responses)
 
     message = response.text.strip() if response.text else ""
 
@@ -144,8 +176,7 @@ def analyze_ticker(ticker: str, triggered_by: str = "scheduler") -> dict:
             triggered_by=triggered_by,
         )
     except Exception as e:
-        import logging
-        logging.getLogger("agent").error(f"DB save failed for {ticker}: {e}")
+        _log.error(f"DB save failed for {ticker}: {e}")
 
     return {
         "ticker": ticker,

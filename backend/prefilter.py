@@ -29,7 +29,7 @@ MIN_PRICE         = 5.0       # Rule 1: no penny stocks
 MAX_PRICE         = 500.0     # Rule 1: raised ceiling for large caps
 MIN_VOLUME_RATIO  = 1.20      # Rule 4: today's vol vs 20-day avg
 MIN_SCORE         = 7.5       # Scoring threshold
-TOP_N             = 10        # Max candidates returned to main agent
+TOP_N             = 5         # Max candidates returned to main agent
 CHUNK_SIZE        = 100       # Download universe in chunks for reliability
 CACHE_TTL_SECONDS = 600       # Re-use downloaded data for 10 min (larger universe)
 
