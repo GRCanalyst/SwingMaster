@@ -1,12 +1,12 @@
 """
 PreFilter Master — pure Python implementation of the 5-rule swing trade screener.
 
-Scans the full universe (~250 stocks) using yfinance batch download,
-applies all rules in order, scores survivors 1–10, returns top candidates
-as structured JSON for the main SwingMaster agent to deep-analyse.
+Scans S&P 500 + S&P MidCap 400 (~900 stocks, approximating Russell 1000)
+using yfinance batch download split into chunks for reliability.
+Applies all 5 rules, scores survivors 0–10, returns top 10 candidates
+for the main SwingMaster AI agent to deep-analyse.
 
 No AI calls here — fast, free, deterministic.
-The system prompt rules are implemented exactly as specified.
 """
 
 import logging
@@ -19,34 +19,35 @@ import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
 
-from universe import UNIVERSE
+from universe import get_universe
 
 log = logging.getLogger("prefilter")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MIN_AVG_VOLUME     = 500_000      # Rule 1: 20-day avg volume
-MIN_PRICE          = 5.0          # Rule 1: no penny stocks
-MAX_PRICE          = 300.0        # Rule 1: reasonable range
-MIN_VOLUME_RATIO   = 1.20         # Rule 4: today's vol vs 20-day avg
-MIN_SCORE          = 7.5          # Scoring threshold
-TOP_N              = 10           # Max candidates to return
-CACHE_TTL_SECONDS  = 300          # Re-use downloaded data for 5 min
+MIN_AVG_VOLUME    = 500_000   # Rule 1: 20-day avg volume
+MIN_PRICE         = 5.0       # Rule 1: no penny stocks
+MAX_PRICE         = 500.0     # Rule 1: raised ceiling for large caps
+MIN_VOLUME_RATIO  = 1.20      # Rule 4: today's vol vs 20-day avg
+MIN_SCORE         = 7.5       # Scoring threshold
+TOP_N             = 10        # Max candidates returned to main agent
+CHUNK_SIZE        = 100       # Download universe in chunks for reliability
+CACHE_TTL_SECONDS = 600       # Re-use downloaded data for 10 min (larger universe)
 
-# ── Simple in-memory cache ────────────────────────────────────────────────────
-_cache: dict = {"data": None, "ts": 0.0}
+# ── In-memory data cache ──────────────────────────────────────────────────────
+_cache: dict = {"data": {}, "ts": 0.0}
 
 
-def _download_universe() -> pd.DataFrame:
-    """Batch-download 1 year of daily OHLCV for all universe tickers."""
-    global _cache
-    now = _time.time()
-    if _cache["data"] is not None and (now - _cache["ts"]) < CACHE_TTL_SECONDS:
-        log.info("Using cached universe data.")
-        return _cache["data"]
+def _download_chunk(tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Download one chunk of tickers. Returns {ticker: DataFrame}."""
+    if len(tickers) == 1:
+        raw = yf.download(tickers[0], period="1y", interval="1d",
+                          auto_adjust=True, progress=False)
+        if not raw.empty:
+            return {tickers[0]: raw}
+        return {}
 
-    log.info(f"Downloading {len(UNIVERSE)} tickers from yfinance…")
     raw = yf.download(
-        tickers=UNIVERSE,
+        tickers=tickers,
         period="1y",
         interval="1d",
         group_by="ticker",
@@ -54,23 +55,52 @@ def _download_universe() -> pd.DataFrame:
         progress=False,
         threads=True,
     )
-    _cache = {"data": raw, "ts": now}
-    log.info("Download complete.")
-    return raw
+    result = {}
+    for t in tickers:
+        try:
+            if isinstance(raw.columns, pd.MultiIndex):
+                df = raw[t].dropna(how="all")
+            else:
+                df = raw.dropna(how="all")
+            if len(df) >= 60:
+                result[t] = df
+        except (KeyError, TypeError):
+            pass
+    return result
 
 
-def _get_ticker_df(raw: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]:
-    """Extract a single ticker's OHLCV DataFrame from the batch download."""
-    try:
-        if isinstance(raw.columns, pd.MultiIndex):
-            df = raw[ticker].dropna(how="all")
-        else:
-            df = raw.dropna(how="all")
-        if len(df) < 60:
-            return None
-        return df
-    except (KeyError, TypeError):
+def _download_universe() -> dict[str, pd.DataFrame]:
+    """
+    Download all universe tickers in CHUNK_SIZE batches.
+    Returns a dict of {ticker: OHLCV DataFrame}.
+    Results are cached for CACHE_TTL_SECONDS.
+    """
+    global _cache
+    now = _time.time()
+    if _cache["data"] and (now - _cache["ts"]) < CACHE_TTL_SECONDS:
+        log.info(f"Using cached data ({len(_cache['data'])} tickers).")
+        return _cache["data"]
+
+    universe = get_universe()
+    chunks   = [universe[i:i + CHUNK_SIZE] for i in range(0, len(universe), CHUNK_SIZE)]
+    log.info(f"Downloading {len(universe)} tickers in {len(chunks)} chunks of {CHUNK_SIZE}…")
+
+    all_data: dict[str, pd.DataFrame] = {}
+    for idx, chunk in enumerate(chunks, 1):
+        log.info(f"  Chunk {idx}/{len(chunks)} ({len(chunk)} tickers)…")
+        all_data.update(_download_chunk(chunk))
+
+    _cache = {"data": all_data, "ts": now}
+    log.info(f"Download complete — {len(all_data)} tickers with data.")
+    return all_data
+
+
+def _get_ticker_df(data: dict[str, pd.DataFrame], ticker: str) -> Optional[pd.DataFrame]:
+    """Look up a single ticker's DataFrame from the pre-built dict."""
+    df = data.get(ticker)
+    if df is None or len(df) < 60:
         return None
+    return df
 
 
 def _score_ticker(ticker: str, df: pd.DataFrame) -> Optional[dict]:
@@ -235,24 +265,18 @@ def _score_ticker(ticker: str, df: pd.DataFrame) -> Optional[dict]:
 
 def run_prefilter(custom_universe: Optional[list[str]] = None) -> dict:
     """
-    Run the full PreFilter Master scan.
+    Run the full PreFilter Master scan over S&P 500 + S&P MidCap 400 (~900 stocks).
 
-    Returns a dict matching the system prompt's JSON output format:
-    {
-      "candidates": [...],
-      "total_scanned": N,
-      "passed_filter": N,
-      "message": "...",
-      "scan_duration_sec": N,
-    }
+    Returns a dict matching the system prompt's JSON output format.
     """
-    tickers = custom_universe or UNIVERSE
     t_start = _time.time()
 
-    log.info(f"PreFilter Master starting — scanning {len(tickers)} tickers")
+    # Use live universe (S&P 500 + MidCap 400) or custom override
+    tickers = custom_universe or get_universe()
+    log.info(f"PreFilter Master starting — {len(tickers)} tickers (S&P500 + MidCap400)")
 
     try:
-        raw = _download_universe()
+        data = _download_universe()
     except Exception as e:
         log.error(f"Universe download failed: {e}")
         return {
@@ -265,7 +289,7 @@ def run_prefilter(custom_universe: Optional[list[str]] = None) -> dict:
     errors     = 0
 
     for ticker in tickers:
-        df = _get_ticker_df(raw, ticker)
+        df = _get_ticker_df(data, ticker)
         if df is None:
             errors += 1
             continue
@@ -273,26 +297,22 @@ def run_prefilter(custom_universe: Optional[list[str]] = None) -> dict:
         if result:
             candidates.append(result)
 
-    # Sort by score descending, keep top N
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    top = candidates[:TOP_N]
-
+    top      = candidates[:TOP_N]
     duration = round(_time.time() - t_start, 1)
     passed   = len(candidates)
 
-    if top:
-        msg = f"Top {len(top)} candidates ready for deep analysis"
-    else:
-        msg = "No high-confidence swing setups found in current market"
+    msg = f"Top {len(top)} candidates ready for deep analysis" if top else \
+          "No high-confidence swing setups found in current market"
 
     log.info(f"PreFilter done — scanned {len(tickers)}, passed {passed}, top {len(top)} | {duration}s")
 
     return {
-        "candidates":       top,
-        "total_scanned":    len(tickers),
-        "passed_filter":    passed,
-        "errors":           errors,
-        "message":          msg,
+        "candidates":        top,
+        "total_scanned":     len(tickers),
+        "passed_filter":     passed,
+        "errors":            errors,
+        "message":           msg,
         "scan_duration_sec": duration,
-        "timestamp":        datetime.utcnow().isoformat(),
+        "timestamp":         datetime.utcnow().isoformat(),
     }

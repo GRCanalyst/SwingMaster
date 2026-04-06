@@ -16,7 +16,7 @@ from config import settings
 from database import init_db, get_alerts, get_stats
 from scheduler import start_scheduler, run_scan, run_single, get_recent_alerts, get_last_prefilter
 from prefilter import run_prefilter
-from universe import UNIVERSE, SECTOR_MAP
+from universe import get_universe, get_universe_meta, refresh_universe
 from tools.market_data import get_real_time_quote
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s — %(message)s")
@@ -183,12 +183,16 @@ async def prefilter_run(background_tasks: BackgroundTasks):
 
 @app.get("/universe")
 def universe_info():
-    """Return the full universe and sector breakdown."""
-    return {
-        "total": len(UNIVERSE),
-        "tickers": UNIVERSE,
-        "sectors": {sector: len(tickers) for sector, tickers in SECTOR_MAP.items()},
-    }
+    """Return the full universe and metadata."""
+    meta = get_universe_meta()
+    return {**meta, "tickers": get_universe()}
+
+
+@app.post("/universe/refresh")
+def universe_refresh():
+    """Force a fresh fetch of S&P 500 + MidCap 400 from Wikipedia."""
+    tickers = refresh_universe(force=True)
+    return {"message": f"Universe refreshed — {len(tickers)} stocks", **get_universe_meta()}
 
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
