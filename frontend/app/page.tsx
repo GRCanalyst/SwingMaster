@@ -12,6 +12,7 @@ import WatchlistPanel from "@/components/WatchlistPanel";
 import MarketStatusComp from "@/components/MarketStatus";
 import PortfolioSizer from "@/components/PortfolioSizer";
 import StatsBar from "@/components/StatsBar";
+import PreFilterPanel from "@/components/PreFilterPanel";
 
 export default function Dashboard() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -146,6 +147,7 @@ export default function Dashboard() {
             {/* ── Right sidebar ────────────────────────────────── */}
             <div className="w-full lg:w-80 xl:w-96 flex flex-col gap-4 flex-shrink-0">
               <MarketStatusComp />
+              <PreFilterPanel />
               <WatchlistPanel onNewAlert={refreshAlerts} />
               <PortfolioSizer />
             </div>

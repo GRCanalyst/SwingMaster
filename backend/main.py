@@ -14,7 +14,9 @@ from pydantic import BaseModel
 
 from config import settings
 from database import init_db, get_alerts, get_stats
-from scheduler import start_scheduler, run_scan, run_single, get_recent_alerts
+from scheduler import start_scheduler, run_scan, run_single, get_recent_alerts, get_last_prefilter
+from prefilter import run_prefilter
+from universe import UNIVERSE, SECTOR_MAP
 from tools.market_data import get_real_time_quote
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s — %(message)s")
@@ -159,6 +161,34 @@ async def analyze(ticker: str):
         return record
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── REST: prefilter ─────────────────────────────────────────────────────────
+
+@app.get("/prefilter/last")
+def prefilter_last():
+    """Return the most recent prefilter result (cached from last scan)."""
+    return get_last_prefilter()
+
+
+@app.post("/prefilter/run")
+async def prefilter_run(background_tasks: BackgroundTasks):
+    """Trigger a fresh prefilter scan over the full universe (async)."""
+    async def _run():
+        result = await asyncio.to_thread(run_prefilter)
+        await manager.broadcast({"type": "prefilter", "data": result})
+    background_tasks.add_task(_run)
+    return {"message": "PreFilter scan started — results pushed via WebSocket."}
+
+
+@app.get("/universe")
+def universe_info():
+    """Return the full universe and sector breakdown."""
+    return {
+        "total": len(UNIVERSE),
+        "tickers": UNIVERSE,
+        "sectors": {sector: len(tickers) for sector, tickers in SECTOR_MAP.items()},
+    }
 
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
