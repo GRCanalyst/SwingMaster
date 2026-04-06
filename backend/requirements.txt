@@ -6,6 +6,7 @@ finnhub-python>=2.4.20
 yfinance>=0.2.40
 pandas>=2.0.0
 requests>=2.31.0
+lxml>=5.0.0
 pandas_ta>=0.3.14b0
 apscheduler>=3.10.0
 pytz>=2024.1
