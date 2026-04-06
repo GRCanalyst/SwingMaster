@@ -165,7 +165,7 @@ export default function Dashboard() {
       {/* ── Footer strip ─────────────────────────────────────────── */}
       <div className="flex-shrink-0 border-t border-bg-border bg-bg-card px-4 py-1.5 flex items-center justify-between">
         <span className="text-xs text-text-muted font-mono">
-          SwingMaster AI · Gemini 2.0 Flash · Finnhub · yfinance
+          SwingMaster AI · Gemini 2.5 Flash-Lite · Finnhub · yfinance
         </span>
         <span className="text-xs text-brand-red font-mono">
           NOT financial advice — trade at your own risk
