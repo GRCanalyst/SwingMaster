@@ -24,7 +24,7 @@ _log = logging.getLogger("agent")
 
 # Gemini free tier: 15 req/min, 1500 req/day
 # Keep ≥5 s between calls to stay under the per-minute cap
-_MIN_CALL_GAP = 5.0   # seconds
+_MIN_CALL_GAP = 2.5   # seconds (2.5 Flash-Lite: 30 RPM free tier)
 _last_call_ts: float = 0.0
 
 # When the daily quota is hit we stop all AI calls until the next calendar day
@@ -162,7 +162,7 @@ def analyze_ticker(ticker: str, triggered_by: str = "scheduler") -> dict:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     # ── Gemini agentic loop ───────────────────────────────────────────────────
-    chat = client.chats.create(model="gemini-2.0-flash", config=_CONFIG)
+    chat = client.chats.create(model="gemini-2.5-flash-lite", config=_CONFIG)
     response = _gemini_send(chat, f"Analyze {ticker} for a swing trade setup right now.")
 
     for _ in range(5):
