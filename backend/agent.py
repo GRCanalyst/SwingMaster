@@ -22,16 +22,43 @@ from config import settings
 
 _log = logging.getLogger("agent")
 
-# Gemini free tier: 15 requests/min → enforce ≥4 s between each API call
-_MIN_CALL_GAP = 4.0   # seconds
+# Gemini free tier: 15 req/min, 1500 req/day
+# Keep ≥5 s between calls to stay under the per-minute cap
+_MIN_CALL_GAP = 5.0   # seconds
 _last_call_ts: float = 0.0
 
+# When the daily quota is hit we stop all AI calls until the next calendar day
+_daily_quota_exhausted: bool = False
+_quota_exhausted_date: str = ""
 
-def _gemini_send(chat, message, max_retries: int = 4):
-    """Send a message to Gemini with rate-limiting and 429 retry-backoff."""
-    global _last_call_ts
+
+class DailyQuotaExhausted(RuntimeError):
+    """Raised when Gemini's daily free-tier quota is used up."""
+
+
+def _is_daily_quota_error(err: str) -> bool:
+    """Distinguish per-day exhaustion from per-minute throttling."""
+    return (
+        "PerDay" in err
+        or "GenerateRequestsPerDayPerProject" in err
+        or 'limit: 0' in err
+    )
+
+
+def _gemini_send(chat, message, max_retries: int = 3):
+    """Send a message to Gemini with rate-limiting and 429 retry-backoff.
+
+    - Per-minute throttle: retries up to max_retries times with exponential backoff.
+    - Daily quota exhausted: raises DailyQuotaExhausted immediately (no retries).
+    """
+    global _last_call_ts, _daily_quota_exhausted, _quota_exhausted_date
+
+    # Fast-fail if we already know today's quota is gone
+    today = time.strftime("%Y-%m-%d")
+    if _daily_quota_exhausted and _quota_exhausted_date == today:
+        raise DailyQuotaExhausted("Gemini daily quota exhausted — resumes tomorrow.")
+
     for attempt in range(max_retries):
-        # enforce minimum gap between calls
         gap = time.monotonic() - _last_call_ts
         if gap < _MIN_CALL_GAP:
             time.sleep(_MIN_CALL_GAP - gap)
@@ -42,12 +69,18 @@ def _gemini_send(chat, message, max_retries: int = 4):
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                wait = _MIN_CALL_GAP * (2 ** attempt)   # 4s, 8s, 16s, 32s
-                _log.warning(f"Gemini 429 — waiting {wait:.0f}s before retry {attempt + 1}/{max_retries}")
+                if _is_daily_quota_error(err):
+                    _daily_quota_exhausted = True
+                    _quota_exhausted_date = today
+                    _log.error("Gemini daily quota exhausted — AI analysis paused until tomorrow.")
+                    raise DailyQuotaExhausted("Gemini daily quota exhausted — resumes tomorrow.")
+                # Per-minute throttle — back off and retry
+                wait = _MIN_CALL_GAP * (2 ** attempt)   # 5s, 10s, 20s
+                _log.warning(f"Gemini rate-limited — waiting {wait:.0f}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait)
             else:
-                raise   # non-429 errors bubble up immediately
-    raise RuntimeError("Gemini quota exhausted after retries — try again later.")
+                raise
+    raise RuntimeError(f"Gemini still rate-limited after {max_retries} retries — skipping ticker.")
 
 # ─── Load system prompt ───────────────────────────────────────────────────────
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
@@ -191,21 +224,29 @@ def analyze_ticker(ticker: str, triggered_by: str = "scheduler") -> dict:
 
 
 def scan_watchlist(tickers: list[str], triggered_by: str = "scheduler") -> list[dict]:
-    """Scan a list of tickers and return all results."""
+    """Scan a list of tickers. Stops early if daily quota is exhausted."""
     results = []
     for ticker in tickers:
         try:
             result = analyze_ticker(ticker, triggered_by=triggered_by)
             results.append(result)
+        except DailyQuotaExhausted as e:
+            _log.warning(f"Daily quota hit at {ticker} — stopping scan early.")
+            results.append(_quota_skip(ticker, str(e)))
+            break   # no point trying remaining tickers
         except Exception as e:
-            results.append({
-                "ticker": ticker,
-                "is_alert": False,
-                "message": f"Error analyzing {ticker}: {e}",
-                "signal_type": "NONE",
-                "confidence": {"score": 0, "label": "N/A", "breakdown": {}},
-                "indicators": {},
-                "prices": {},
-                "db_id": None,
-            })
+            results.append(_quota_skip(ticker, f"Error: {e}"))
     return results
+
+
+def _quota_skip(ticker: str, reason: str) -> dict:
+    return {
+        "ticker": ticker,
+        "is_alert": False,
+        "message": reason,
+        "signal_type": "NONE",
+        "confidence": {"score": 0, "label": "N/A", "breakdown": {}},
+        "indicators": {},
+        "prices": {},
+        "db_id": None,
+    }
